@@ -41,7 +41,7 @@
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过。
 - `cargo build --workspace --all-targets`：通过；`git diff --check`：通过。
 - 以上仅验证 Rust 确定性核心。Prompt regression、模型 schema、Adapter→Gateway→DB 集成、网页 E2E 和 Android 截图→OCR E2E 尚未实现或验证，不能将 Dating Copilot 全项目标记验收完成。
-- 此前 P0 基线已提交为 `7f22199` 并推送到 `feat/p0-deterministic-core`；本轮复审修正已另行提交到同一特性分支，推送需要重试（首次尝试时本机无法解析配置的 SSH 主机名）。
+- P0 基线 `7f22199` 与本轮复审修正 `b39f88f` 均已提交并推送到 `feat/p0-deterministic-core`。原配置 `pony.github.com` 在本机 DNS 失败；改用 GitHub 官方 `ssh.github.com:443`，核验官方 Ed25519 主机指纹后完成同步。
 
 ### 开源参照
 - 本项目可借鉴 Goutoujunshi 的用户同意控制、可追溯来源、事实/推断/未知分离；Harness 侧调研记录及版本/许可证见 [`../codex-harness/docs/OPEN_SOURCE_REFERENCE_REVIEW_20260930.md`](../codex-harness/docs/OPEN_SOURCE_REFERENCE_REVIEW_20260930.md)。本轮没有复制第三方代码。
