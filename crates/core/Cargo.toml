@@ -1,0 +1,14 @@
+[package]
+name = "dating-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "dating_core"
+path = "src/lib.rs"
+
+# Zero external dependencies on purpose: the deterministic core is standard
+# library only and must build fully offline.
+[dependencies]
+
+[dev-dependencies]
