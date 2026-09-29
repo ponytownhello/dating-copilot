@@ -25,3 +25,28 @@
 - Prompt Registry、Claude-14 提示与 100+ eval 集尚未建立：`docs/TEST_PLAN.md` 要求的 12 类提示回归与 Groundedness/边界召回等指标需要真实模型调用授权与评测数据，属未开闸门。
 - 持久层（SQLite）、localhost Gateway、MV3 扩展与 Compose 客户端均未开始；V0.2/V0.3/V1 的验收标准未逐项登记。
 - 本分支 `feat/p0-deterministic-core` 仅为特性分支；按 `AGENTS.md` 分支策略需 PR/审阅后才并入 `main`，不单方面快进主线。
+
+## 2026-09-30 总监复审：证据门禁与拒绝边界
+
+### 本轮修正
+- `CanonicalMessage` 现拒绝空白 `source_ref`；Evidence/Inference 拒绝空白 id、事实/结论和空白来源消息 id。
+- NBA 不再信任外部 `explicit_rejection` / `boundary_signal` 布尔值；必须在 Ledger 找到所有引用，按 `ExplicitRejection` / `Boundary` 类型导出 STOP / COOL_DOWN。缺少或引用未知证据时返回错误、不生成建议。
+- STOP / COOL_DOWN 不再留下自然或幽默回复候选；风格标签不能证明边界话术安全。
+- 状态裁决使用调用方传入的可信当前阶段，不接受模型自行声明 `from`；只允许一步前进，来源证据出现边界则阻止前进并固定 BOUNDARY 趋势，未引用边界证据不能声明 BOUNDARY 趋势。Applied 结果保留证据 id。
+- 测试计划、架构与回复策略文档已同步。
+
+### 本轮验证
+- `cargo fmt --all --check`：通过。
+- `cargo test --workspace --all-targets`：26 passed / 0 failed。
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过。
+- `cargo build --workspace --all-targets`：通过；`git diff --check`：通过。
+- 以上仅验证 Rust 确定性核心。Prompt regression、模型 schema、Adapter→Gateway→DB 集成、网页 E2E 和 Android 截图→OCR E2E 尚未实现或验证，不能将 Dating Copilot 全项目标记验收完成。
+- 此前 P0 基线已提交为 `7f22199` 并推送到 `feat/p0-deterministic-core`；本轮复审修正已另行提交到同一特性分支，推送需要重试（首次尝试时本机无法解析配置的 SSH 主机名）。
+
+### 开源参照
+- 本项目可借鉴 Goutoujunshi 的用户同意控制、可追溯来源、事实/推断/未知分离；Harness 侧调研记录及版本/许可证见 [`../codex-harness/docs/OPEN_SOURCE_REFERENCE_REVIEW_20260930.md`](../codex-harness/docs/OPEN_SOURCE_REFERENCE_REVIEW_20260930.md)。本轮没有复制第三方代码。
+
+### 后续验收闸门
+- 建立版本化 Prompt Registry、JSON Schema 校验和 `docs/TEST_PLAN.md` 规定的 12 类回归集；明确真实拒绝、一般边界、暂时忙碌的区分与误报/漏报指标。
+- 设计并实现用户同意、撤回、会话删除/导出后的 SQLite 持久层；为 Adapter/Gateway/客户端拆出可独立验收的需求与跨平台 CI。
+- 真实 API/网页账号、Android 工具链和设备 E2E 在可用前列为外部验收项；任何单元测试通过不能替代这些门禁。

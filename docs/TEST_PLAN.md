@@ -1,6 +1,6 @@
 # Test & Evaluation Plan
 
-Unit：CanonicalMessage、dedupe、debounce、state transition、evidence ledger、schema validation。
+Unit：CanonicalMessage（含非空来源引用）、dedupe、debounce、state transition（可信当前状态）、evidence ledger（非空证据来源）、schema validation；NBA 对缺失/未知证据 fail-closed，边界/拒绝证据压过阶段映射且不产生回复候选。
 Integration：Adapter → Gateway → DB → Engine；LLM mock 与失败恢复。
 E2E：网页 fixture 新消息 → 自动分析 → UI建议；Android截图 → OCR → 建议。
 

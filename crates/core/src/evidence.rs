@@ -26,6 +26,9 @@ pub enum FactType {
     Behavioral,
     /// A boundary or rejection signal (AGENTS.md rule 9).
     Boundary,
+    /// An explicit rejection. Kept distinct so STOP is derived from sourced
+    /// evidence instead of an unchecked caller-provided boolean.
+    ExplicitRejection,
     /// A sensitive or unverifiable attribute claim. REJECTED at insertion.
     SensitiveSpeculation,
 }
@@ -67,6 +70,11 @@ pub enum Groundedness {
 /// stored" — the ledger fails closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LedgerError {
+    /// A required identifier or text field is blank.
+    BlankField {
+        entity: &'static str,
+        field: &'static str,
+    },
     /// Evidence without any source message id (rule 4 / "no source, no
     /// long-term memory").
     EmptySourceMessageIds(String),
@@ -91,6 +99,9 @@ pub enum LedgerError {
 impl fmt::Display for LedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            LedgerError::BlankField { entity, field } => {
+                write!(f, "{entity} field `{field}` is blank")
+            }
             LedgerError::EmptySourceMessageIds(id) => {
                 write!(f, "evidence `{id}` has no source_message_ids")
             }
@@ -139,11 +150,33 @@ impl Ledger {
     /// Insert evidence, failing closed on sourceless facts, out-of-range
     /// confidence, sensitive speculations and duplicate ids.
     pub fn add_evidence(&mut self, evidence: Evidence) -> Result<(), LedgerError> {
+        if evidence.id.trim().is_empty() {
+            return Err(LedgerError::BlankField {
+                entity: "evidence",
+                field: "id",
+            });
+        }
+        if evidence.fact.trim().is_empty() {
+            return Err(LedgerError::BlankField {
+                entity: "evidence",
+                field: "fact",
+            });
+        }
         if evidence.fact_type == FactType::SensitiveSpeculation {
             return Err(LedgerError::SensitiveSpeculationRejected(evidence.id));
         }
         if evidence.source_message_ids.is_empty() {
             return Err(LedgerError::EmptySourceMessageIds(evidence.id));
+        }
+        if evidence
+            .source_message_ids
+            .iter()
+            .any(|source_id| source_id.trim().is_empty())
+        {
+            return Err(LedgerError::BlankField {
+                entity: "evidence",
+                field: "source_message_ids[]",
+            });
         }
         if evidence.confidence > 100 {
             return Err(LedgerError::ConfidenceTooHigh {
@@ -162,6 +195,18 @@ impl Ledger {
     /// evidence or when any cited id (supporting or counter) is unknown to
     /// the ledger — the error names the offending evidence id.
     pub fn add_inference(&mut self, inference: Inference) -> Result<(), LedgerError> {
+        if inference.id.trim().is_empty() {
+            return Err(LedgerError::BlankField {
+                entity: "inference",
+                field: "id",
+            });
+        }
+        if inference.claim.trim().is_empty() {
+            return Err(LedgerError::BlankField {
+                entity: "inference",
+                field: "claim",
+            });
+        }
         if inference.supporting_evidence_ids.is_empty() {
             return Err(LedgerError::EmptySupportingEvidenceIds(inference.id));
         }

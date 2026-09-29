@@ -8,7 +8,7 @@ use dating_core::canonical::{
     compute_dedupe_key, CanonicalError, CanonicalMessage, DedupeIndex, Direction, MessageType,
 };
 use dating_core::evidence::{Evidence, FactType, Groundedness, Inference, Ledger, LedgerError};
-use dating_core::nba::{NbaInput, NextBestAction, ReplyCandidate, ReplyStyle};
+use dating_core::nba::{NbaError, NbaInput, NextBestAction, ReplyCandidate, ReplyStyle};
 use dating_core::state::{adjudicate, AdjudicationError, Proposal, Stage, Trend};
 
 fn message(content: &str, direction: Direction, timestamp_millis: i64) -> CanonicalMessage {
@@ -48,18 +48,13 @@ fn inference(id: &str, supporting: &[&str], counter: &[&str]) -> Inference {
     }
 }
 
-fn proposal(from: Stage, to: Stage, trend: Trend, evidence_ids: &[&str]) -> Proposal {
+fn proposal(to: Stage, trend: Trend, evidence_ids: &[&str]) -> Proposal {
     Proposal {
-        from,
         to,
         trend,
         reason: "test proposal".to_string(),
         evidence_ids: evidence_ids.iter().map(|s| s.to_string()).collect(),
     }
-}
-
-fn has_ids<'a>(ids: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
-    move |id: &str| ids.contains(&id)
 }
 
 fn candidate(style: ReplyStyle, text: &str) -> ReplyCandidate {
@@ -139,6 +134,14 @@ fn validation_rejects_blank_content_and_tampered_dedupe_key() {
         whitespace_content.validate(),
         Err(CanonicalError::BlankField("content"))
     );
+    let blank_source_ref = CanonicalMessage {
+        source_ref: "  ".to_string(),
+        ..message("ok", Direction::Inbound, 5)
+    };
+    assert_eq!(
+        blank_source_ref.validate(),
+        Err(CanonicalError::BlankField("source_ref"))
+    );
     let tampered = CanonicalMessage {
         dedupe_key: "0000000000000000".to_string(),
         ..message("ok", Direction::Inbound, 5)
@@ -202,6 +205,43 @@ fn sourceless_evidence_is_rejected_and_not_stored() {
         Err(LedgerError::EmptySourceMessageIds("x".to_string()))
     );
     assert!(ledger.is_empty());
+}
+
+#[test]
+fn ledger_rejects_blank_evidence_and_inference_fields() {
+    let mut ledger = Ledger::new();
+    let mut blank_id = evidence("e1", FactType::Stated, 50);
+    blank_id.id = "  ".to_string();
+    assert_eq!(
+        ledger.add_evidence(blank_id),
+        Err(LedgerError::BlankField {
+            entity: "evidence",
+            field: "id",
+        })
+    );
+
+    let mut blank_source = evidence("e2", FactType::Stated, 50);
+    blank_source.source_message_ids = vec![" ".to_string()];
+    assert_eq!(
+        ledger.add_evidence(blank_source),
+        Err(LedgerError::BlankField {
+            entity: "evidence",
+            field: "source_message_ids[]",
+        })
+    );
+
+    ledger
+        .add_evidence(evidence("e3", FactType::Stated, 50))
+        .unwrap();
+    let mut blank_claim = inference("i1", &["e3"], &[]);
+    blank_claim.claim = "\t ".to_string();
+    assert_eq!(
+        ledger.add_inference(blank_claim),
+        Err(LedgerError::BlankField {
+            entity: "inference",
+            field: "claim",
+        })
+    );
 }
 
 #[test]
@@ -310,25 +350,23 @@ fn ground_check_never_fabricates_a_verdict_for_unknown_inference() {
 
 #[test]
 fn adjudicate_rejects_evidence_less_and_unknown_id_proposals() {
-    let known = ["e1"];
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 70))
+        .unwrap();
     assert_eq!(
         adjudicate(
-            &proposal(Stage::ActiveChat, Stage::Familiar, Trend::Warming, &[]),
-            false,
-            has_ids(&known)
+            Stage::ActiveChat,
+            &proposal(Stage::Familiar, Trend::Warming, &[]),
+            &ledger
         ),
         Err(AdjudicationError::NoEvidenceIds)
     );
     assert_eq!(
         adjudicate(
-            &proposal(
-                Stage::ActiveChat,
-                Stage::Familiar,
-                Trend::Warming,
-                &["ghost"]
-            ),
-            false,
-            has_ids(&known)
+            Stage::ActiveChat,
+            &proposal(Stage::Familiar, Trend::Warming, &["ghost"]),
+            &ledger
         ),
         Err(AdjudicationError::UnknownEvidence("ghost".to_string()))
     );
@@ -336,21 +374,25 @@ fn adjudicate_rejects_evidence_less_and_unknown_id_proposals() {
 
 #[test]
 fn adjudicate_allows_one_rank_forward_but_rejects_skip_ahead() {
-    let known = ["e1"];
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 70))
+        .unwrap();
     let forward = adjudicate(
-        &proposal(Stage::Familiar, Stage::Warming, Trend::Warming, &["e1"]),
-        false,
-        has_ids(&known),
+        Stage::Familiar,
+        &proposal(Stage::Warming, Trend::Warming, &["e1"]),
+        &ledger,
     )
     .expect("one-rank forward move allowed");
     assert_eq!(forward.stage, Stage::Warming);
     assert_eq!(forward.trend, Trend::Warming);
+    assert_eq!(forward.evidence_ids, vec!["e1"]);
 
     assert_eq!(
         adjudicate(
-            &proposal(Stage::Familiar, Stage::Flirting, Trend::Warming, &["e1"]),
-            false,
-            has_ids(&known)
+            Stage::Familiar,
+            &proposal(Stage::Flirting, Trend::Warming, &["e1"]),
+            &ledger
         ),
         Err(AdjudicationError::SkipForward {
             from: Stage::Familiar,
@@ -362,16 +404,14 @@ fn adjudicate_allows_one_rank_forward_but_rejects_skip_ahead() {
 
 #[test]
 fn adjudicate_allows_any_backward_move() {
-    let known = ["e1"];
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 70))
+        .unwrap();
     let backward = adjudicate(
-        &proposal(
-            Stage::InvitationReady,
-            Stage::ActiveChat,
-            Trend::Cooling,
-            &["e1"],
-        ),
-        false,
-        has_ids(&known),
+        Stage::InvitationReady,
+        &proposal(Stage::ActiveChat, Trend::Cooling, &["e1"]),
+        &ledger,
     )
     .expect("backward moves are never limited in distance");
     assert_eq!(backward.stage, Stage::ActiveChat);
@@ -380,26 +420,24 @@ fn adjudicate_allows_any_backward_move() {
 
 #[test]
 fn boundary_signal_forbids_any_forward_move() {
-    let known = ["e1"];
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("b1", FactType::Boundary, 100))
+        .unwrap();
     assert_eq!(
         adjudicate(
-            &proposal(Stage::Familiar, Stage::Warming, Trend::Warming, &["e1"]),
-            true,
-            has_ids(&known)
+            Stage::Familiar,
+            &proposal(Stage::Warming, Trend::Warming, &["b1"]),
+            &ledger
         ),
         Err(AdjudicationError::BoundaryBlocksForward { to: Stage::Warming })
     );
     // Even the minimal one-rank step is blocked while a boundary is present.
     assert_eq!(
         adjudicate(
-            &proposal(
-                Stage::Flirting,
-                Stage::InvitationReady,
-                Trend::Warming,
-                &["e1"]
-            ),
-            true,
-            has_ids(&known)
+            Stage::Flirting,
+            &proposal(Stage::InvitationReady, Trend::Warming, &["b1"]),
+            &ledger
         ),
         Err(AdjudicationError::BoundaryBlocksForward {
             to: Stage::InvitationReady
@@ -409,24 +447,63 @@ fn boundary_signal_forbids_any_forward_move() {
 
 #[test]
 fn boundary_trend_is_carried_regardless_of_stage_move() {
-    let known = ["e1"];
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("b1", FactType::Boundary, 100))
+        .unwrap();
     let backward = adjudicate(
-        &proposal(Stage::Familiar, Stage::ActiveChat, Trend::Boundary, &["e1"]),
-        true,
-        has_ids(&known),
+        Stage::Familiar,
+        &proposal(Stage::ActiveChat, Trend::Warming, &["b1"]),
+        &ledger,
     )
     .expect("backward move with boundary trend is allowed");
     assert_eq!(backward.trend, Trend::Boundary);
     assert_eq!(backward.stage, Stage::ActiveChat);
 
     let lateral = adjudicate(
-        &proposal(Stage::Familiar, Stage::Familiar, Trend::Boundary, &["e1"]),
-        true,
-        has_ids(&known),
+        Stage::Familiar,
+        &proposal(Stage::Familiar, Trend::Warming, &["b1"]),
+        &ledger,
     )
     .expect("lateral (no-op) move with boundary trend is allowed");
     assert_eq!(lateral.trend, Trend::Boundary);
     assert_eq!(lateral.stage, Stage::Familiar);
+}
+
+#[test]
+fn adjudicator_uses_trusted_current_stage_and_not_a_model_supplied_from() {
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 70))
+        .unwrap();
+    assert_eq!(
+        adjudicate(
+            Stage::Unknown,
+            &proposal(Stage::Familiar, Trend::Warming, &["e1"]),
+            &ledger
+        ),
+        Err(AdjudicationError::SkipForward {
+            from: Stage::Unknown,
+            to: Stage::Familiar,
+            distance: 3,
+        })
+    );
+}
+
+#[test]
+fn boundary_trend_requires_a_boundary_evidence_id() {
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 70))
+        .unwrap();
+    assert_eq!(
+        adjudicate(
+            Stage::Familiar,
+            &proposal(Stage::Familiar, Trend::Boundary, &["e1"]),
+            &ledger,
+        ),
+        Err(AdjudicationError::BoundaryTrendWithoutEvidence)
+    );
 }
 
 #[test]
@@ -443,22 +520,21 @@ fn stage_rank_ordering_matches_ladder() {
 
 #[test]
 fn invitation_ready_with_boundary_never_yields_invite() {
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("b1", FactType::Boundary, 100))
+        .unwrap();
     let input = NbaInput {
         stage: Stage::InvitationReady,
-        explicit_rejection: false,
-        boundary_signal: true,
         evidence_ids: vec!["b1".to_string()],
         proposed_candidates: vec![
             candidate(ReplyStyle::Natural, "好，你先忙"),
             candidate(ReplyStyle::GentleProgress, "那这周末出来喝杯咖啡？"),
         ],
     };
-    let advice = dating_core::next_best_action(&input);
+    let advice = dating_core::next_best_action(&input, &ledger).unwrap();
     assert_eq!(advice.action, NextBestAction::CoolDown);
-    assert!(!advice
-        .reply_candidates
-        .iter()
-        .any(|c| c.style == ReplyStyle::GentleProgress));
+    assert!(advice.reply_candidates.is_empty());
     assert_eq!(advice.evidence_ids, vec!["b1".to_string()]);
     assert!(advice.reason.contains("b1"), "reason must cite evidence");
     assert!(!advice.reason.contains('%'), "no percentage anywhere");
@@ -467,39 +543,46 @@ fn invitation_ready_with_boundary_never_yields_invite() {
 
 #[test]
 fn explicit_rejection_yields_stop_and_dominates_everything() {
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("b1", FactType::ExplicitRejection, 100))
+        .unwrap();
+    ledger
+        .add_evidence(evidence("b2", FactType::Behavioral, 80))
+        .unwrap();
     let input = NbaInput {
         stage: Stage::InvitationReady,
-        explicit_rejection: true,
-        boundary_signal: true,
         evidence_ids: vec!["b1".to_string(), "b2".to_string()],
         proposed_candidates: vec![
             candidate(ReplyStyle::Humorous, "开个玩笑缓解一下"),
             candidate(ReplyStyle::GentleProgress, "改天再约？"),
         ],
     };
-    let advice = dating_core::next_best_action(&input);
+    let advice = dating_core::next_best_action(&input, &ledger).unwrap();
     assert_eq!(advice.action, NextBestAction::Stop);
-    assert!(advice
-        .reply_candidates
-        .iter()
-        .all(|c| c.style != ReplyStyle::GentleProgress));
+    assert!(advice.reply_candidates.is_empty());
     assert!(advice.reason.contains("b1"));
     assert!(advice.reason.contains("b2"));
 }
 
 #[test]
 fn normal_invitation_ready_without_boundary_yields_invite_with_evidence() {
+    let mut ledger = Ledger::new();
+    ledger
+        .add_evidence(evidence("e1", FactType::Behavioral, 80))
+        .unwrap();
+    ledger
+        .add_evidence(evidence("e2", FactType::Stated, 80))
+        .unwrap();
     let input = NbaInput {
         stage: Stage::InvitationReady,
-        explicit_rejection: false,
-        boundary_signal: false,
         evidence_ids: vec!["e1".to_string(), "e2".to_string()],
         proposed_candidates: vec![candidate(
             ReplyStyle::GentleProgress,
             "周六下午有场展览，一起去看？",
         )],
     };
-    let advice = dating_core::next_best_action(&input);
+    let advice = dating_core::next_best_action(&input, &ledger).unwrap();
     assert_eq!(advice.action, NextBestAction::Invite);
     assert_eq!(
         advice.evidence_ids,
@@ -515,6 +598,14 @@ fn normal_invitation_ready_without_boundary_yields_invite_with_evidence() {
 
 #[test]
 fn boundary_precedence_covers_every_stage() {
+    let mut boundary_ledger = Ledger::new();
+    boundary_ledger
+        .add_evidence(evidence("b1", FactType::Boundary, 100))
+        .unwrap();
+    let mut rejection_ledger = Ledger::new();
+    rejection_ledger
+        .add_evidence(evidence("r1", FactType::ExplicitRejection, 100))
+        .unwrap();
     for stage in [
         Stage::Unknown,
         Stage::Acquaintance,
@@ -527,21 +618,47 @@ fn boundary_precedence_covers_every_stage() {
         Stage::Dated,
         Stage::PostDate,
     ] {
-        let cooldown = dating_core::next_best_action(&NbaInput {
-            stage,
-            explicit_rejection: false,
-            boundary_signal: true,
-            evidence_ids: vec!["b1".to_string()],
-            proposed_candidates: Vec::new(),
-        });
+        let cooldown = dating_core::next_best_action(
+            &NbaInput {
+                stage,
+                evidence_ids: vec!["b1".to_string()],
+                proposed_candidates: Vec::new(),
+            },
+            &boundary_ledger,
+        )
+        .unwrap();
         assert_eq!(cooldown.action, NextBestAction::CoolDown, "stage {stage}");
-        let stop = dating_core::next_best_action(&NbaInput {
-            stage,
-            explicit_rejection: true,
-            boundary_signal: false,
-            evidence_ids: vec!["b1".to_string()],
-            proposed_candidates: Vec::new(),
-        });
+        let stop = dating_core::next_best_action(
+            &NbaInput {
+                stage,
+                evidence_ids: vec!["r1".to_string()],
+                proposed_candidates: Vec::new(),
+            },
+            &rejection_ledger,
+        )
+        .unwrap();
         assert_eq!(stop.action, NextBestAction::Stop, "stage {stage}");
     }
+}
+
+#[test]
+fn nba_fails_closed_without_known_evidence() {
+    let input = NbaInput {
+        stage: Stage::InvitationReady,
+        evidence_ids: Vec::new(),
+        proposed_candidates: vec![candidate(ReplyStyle::GentleProgress, "周末见面吗？")],
+    };
+    assert_eq!(
+        dating_core::next_best_action(&input, &Ledger::new()),
+        Err(NbaError::NoEvidenceIds)
+    );
+
+    let unknown = NbaInput {
+        evidence_ids: vec!["missing".to_string()],
+        ..input
+    };
+    assert_eq!(
+        dating_core::next_best_action(&unknown, &Ledger::new()),
+        Err(NbaError::UnknownEvidence("missing".to_string()))
+    );
 }

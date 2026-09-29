@@ -178,6 +178,9 @@ impl CanonicalMessage {
         if self.content.trim().is_empty() {
             return Err(CanonicalError::BlankField("content"));
         }
+        if self.source_ref.trim().is_empty() {
+            return Err(CanonicalError::BlankField("source_ref"));
+        }
         if self.timestamp_millis <= 0 {
             return Err(CanonicalError::NonPositiveTimestamp(self.timestamp_millis));
         }

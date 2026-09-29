@@ -26,5 +26,7 @@ pub use canonical::{
     compute_dedupe_key, CanonicalError, CanonicalMessage, DedupeIndex, Direction, MessageType,
 };
 pub use evidence::{Evidence, FactType, Groundedness, Inference, Ledger, LedgerError};
-pub use nba::{next_best_action, Advice, NbaInput, NextBestAction, ReplyCandidate, ReplyStyle};
+pub use nba::{
+    next_best_action, Advice, NbaError, NbaInput, NextBestAction, ReplyCandidate, ReplyStyle,
+};
 pub use state::{adjudicate, AdjudicationError, Applied, Proposal, Stage, Trend};

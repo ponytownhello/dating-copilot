@@ -5,6 +5,7 @@
 //! decides what is applied (AGENTS.md rule 5). It is a pure function of its
 //! inputs: no clock, no randomness, no persistence.
 
+use crate::evidence::{FactType, Ledger};
 use std::fmt;
 
 /// Relationship stage, declared in ascending order of closeness.
@@ -82,7 +83,6 @@ impl fmt::Display for Trend {
 /// A model-proposed transition. Never applied directly — see [`adjudicate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposal {
-    pub from: Stage,
     pub to: Stage,
     pub trend: Trend,
     /// Human-readable rationale from the model. Stored for audit only; the
@@ -94,10 +94,12 @@ pub struct Proposal {
 /// The deterministic result of an accepted proposal: the applied stage and
 /// trend. Deliberately *not* a "completion" or success verdict — the state
 /// simply moved to `stage` with `trend`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
     pub stage: Stage,
     pub trend: Trend,
+    /// Evidence that was validated before applying the state change.
+    pub evidence_ids: Vec<String>,
 }
 
 /// Deterministic reasons a proposal is rejected.
@@ -116,6 +118,8 @@ pub enum AdjudicationError {
     /// A boundary signal is present, so any forward move is forbidden
     /// (AGENTS.md rule 9).
     BoundaryBlocksForward { to: Stage },
+    /// A `BOUNDARY` trend must be backed by a cited boundary/rejection fact.
+    BoundaryTrendWithoutEvidence,
 }
 
 impl fmt::Display for AdjudicationError {
@@ -136,45 +140,64 @@ impl fmt::Display for AdjudicationError {
             AdjudicationError::BoundaryBlocksForward { to } => {
                 write!(f, "boundary signal blocks forward move to {to}")
             }
+            AdjudicationError::BoundaryTrendWithoutEvidence => {
+                f.write_str("BOUNDARY trend requires cited boundary or rejection evidence")
+            }
         }
     }
 }
 
-/// Adjudicate one proposed transition with fixed, deterministic rule order:
+/// Adjudicate one proposed transition against the trusted current stage and
+/// evidence ledger with fixed, deterministic rule order:
 /// 1. empty `evidence_ids` ⇒ [`AdjudicationError::NoEvidenceIds`];
 /// 2. any cited id the ledger does not know ⇒
 ///    [`AdjudicationError::UnknownEvidence`] (names the first bad id);
-/// 3. `boundary_present` plus any forward move ⇒
+/// 3. a cited boundary/rejection fact plus any forward move ⇒
 ///    [`AdjudicationError::BoundaryBlocksForward`] (AGENTS.md rule 9);
-/// 4. forward move of more than one rank ⇒ [`AdjudicationError::SkipForward`];
-/// 5. otherwise the move is applied: forward one rank, lateral, or any
+/// 4. `Trend::Boundary` without cited boundary/rejection evidence ⇒
+///    [`AdjudicationError::BoundaryTrendWithoutEvidence`];
+/// 5. forward move of more than one rank ⇒ [`AdjudicationError::SkipForward`];
+/// 6. otherwise the move is applied: forward one rank, lateral, or any
 ///    backward move.
 ///
-/// The applied trend always carries the proposal's trend, so a `Boundary`
-/// trend survives regardless of which stage move (if any) was allowed.
+/// The proposal cannot choose its own `from` stage. `current_stage` is the
+/// trusted state supplied by the caller. A cited boundary/rejection fact
+/// forces the applied trend to `Boundary`, even for a lateral or backward
+/// stage move.
 pub fn adjudicate(
+    current_stage: Stage,
     proposal: &Proposal,
-    boundary_present: bool,
-    ledger_has_evidence: impl Fn(&str) -> bool,
+    ledger: &Ledger,
 ) -> Result<Applied, AdjudicationError> {
     if proposal.evidence_ids.is_empty() {
         return Err(AdjudicationError::NoEvidenceIds);
     }
     for id in &proposal.evidence_ids {
-        if !ledger_has_evidence(id) {
+        if !ledger.has_evidence(id) {
             return Err(AdjudicationError::UnknownEvidence(id.clone()));
         }
     }
 
-    let is_forward = proposal.to.rank() > proposal.from.rank();
+    let boundary_present = proposal.evidence_ids.iter().any(|id| {
+        ledger.get_evidence(id).is_some_and(|evidence| {
+            matches!(
+                evidence.fact_type,
+                FactType::Boundary | FactType::ExplicitRejection
+            )
+        })
+    });
+    if proposal.trend == Trend::Boundary && !boundary_present {
+        return Err(AdjudicationError::BoundaryTrendWithoutEvidence);
+    }
+    let is_forward = proposal.to.rank() > current_stage.rank();
     if is_forward {
         if boundary_present {
             return Err(AdjudicationError::BoundaryBlocksForward { to: proposal.to });
         }
-        let distance = proposal.to.rank() - proposal.from.rank();
+        let distance = proposal.to.rank() - current_stage.rank();
         if distance > 1 {
             return Err(AdjudicationError::SkipForward {
-                from: proposal.from,
+                from: current_stage,
                 to: proposal.to,
                 distance,
             });
@@ -183,6 +206,11 @@ pub fn adjudicate(
 
     Ok(Applied {
         stage: proposal.to,
-        trend: proposal.trend,
+        trend: if boundary_present {
+            Trend::Boundary
+        } else {
+            proposal.trend
+        },
+        evidence_ids: proposal.evidence_ids.clone(),
     })
 }

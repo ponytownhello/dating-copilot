@@ -14,6 +14,7 @@
 //! suggestion; after either outcome no `GentleProgress`/invite-flavoured
 //! copy may be generated.
 
+use crate::evidence::{FactType, Ledger};
 use crate::state::Stage;
 use std::fmt;
 
@@ -54,8 +55,7 @@ impl fmt::Display for NextBestAction {
 }
 
 /// Reply tone buckets (PROMPT_DESIGN.md "Reply": natural / humorous /
-/// gentle_progress). `GentleProgress` is the only progression-flavoured tone
-/// and is the style gate used after a boundary signal.
+/// gentle_progress). The core does not infer text safety from the tone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyStyle {
     Natural,
@@ -80,20 +80,39 @@ pub struct Advice {
     pub reply_candidates: Vec<ReplyCandidate>,
 }
 
-/// Everything the deterministic rule needs. `explicit_rejection` and
-/// `boundary_signal` are decided upstream by evidence classification
-/// (`FactType::Boundary`), never by this function reading message text.
+/// The NBA cannot return a recommendation unless it can bind that
+/// recommendation to evidence that still exists in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NbaError {
+    NoEvidenceIds,
+    UnknownEvidence(String),
+}
+
+impl fmt::Display for NbaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NbaError::NoEvidenceIds => {
+                f.write_str("next-best-action requires at least one evidence id")
+            }
+            NbaError::UnknownEvidence(id) => {
+                write!(f, "next-best-action references unknown evidence `{id}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NbaError {}
+
+/// Everything the deterministic rule needs. Rejection and boundary status
+/// are derived from the cited ledger records, never from unchecked booleans
+/// or direct message-text inspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NbaInput {
     pub stage: Stage,
-    /// The partner declined explicitly: dominates everything ⇒ STOP.
-    pub explicit_rejection: bool,
-    /// Any boundary signal is present: dominates stage rules ⇒ COOL_DOWN.
-    pub boundary_signal: bool,
     /// Evidence ids backing this decision; reasons cite them (rule 7).
     pub evidence_ids: Vec<String>,
-    /// Candidates proposed by the prompt layer. This rule only filters them
-    /// on the boundary path; it never invents reply text itself.
+    /// Candidates proposed by the prompt layer. This rule never invents reply
+    /// text and suppresses all candidates after a boundary or rejection.
     pub proposed_candidates: Vec<ReplyCandidate>,
 }
 
@@ -120,28 +139,46 @@ fn stage_reason(stage: Stage, action: NextBestAction) -> String {
 }
 
 /// Build the reason string, always appending the cited evidence ids so each
-/// conclusion stays traceable (AGENTS.md rule 7).
+/// conclusion stays traceable (AGENTS.md rule 7). Callers validate non-empty
+/// ids first.
 fn reason_with_evidence(base: &str, evidence_ids: &[String]) -> String {
-    if evidence_ids.is_empty() {
-        format!("{base} (tracked evidence: none recorded)")
-    } else {
-        format!("{base} (tracked evidence: {})", evidence_ids.join(", "))
-    }
+    format!("{base} (tracked evidence: {})", evidence_ids.join(", "))
 }
 
 /// Deterministic precedence:
-/// 1. `explicit_rejection` ⇒ [`NextBestAction::Stop`], regardless of stage.
-/// 2. else `boundary_signal` ⇒ [`NextBestAction::CoolDown`], regardless of
-///    stage (so `InvitationReady` + a boundary must NOT yield `Invite`).
+/// 1. cited `ExplicitRejection` evidence ⇒ [`NextBestAction::Stop`],
+///    regardless of stage;
+/// 2. else cited `Boundary` evidence ⇒ [`NextBestAction::CoolDown`],
+///    regardless of stage (so `InvitationReady` + a boundary must NOT yield
+///    `Invite`);
 /// 3. else the baseline [`stage_action`] table.
 ///
-/// On the STOP/COOL_DOWN path every `GentleProgress` candidate is stripped
-/// from the proposal (progression/invite-flavoured copy is never emitted
-/// after a boundary — PROMPT_DESIGN.md "明确拒绝后不得生成施压推进话术").
-pub fn next_best_action(input: &NbaInput) -> Advice {
-    let action = if input.explicit_rejection {
+/// Every cited id must still exist in the ledger. STOP and COOL_DOWN emit no
+/// reply candidates: tone labels alone cannot prove that generated text is
+/// safe after a rejection or boundary.
+pub fn next_best_action(input: &NbaInput, ledger: &Ledger) -> Result<Advice, NbaError> {
+    if input.evidence_ids.is_empty() {
+        return Err(NbaError::NoEvidenceIds);
+    }
+    let mut explicit_rejection = false;
+    let mut boundary_signal = false;
+    for id in &input.evidence_ids {
+        let evidence = ledger
+            .get_evidence(id)
+            .ok_or_else(|| NbaError::UnknownEvidence(id.clone()))?;
+        match evidence.fact_type {
+            FactType::ExplicitRejection => {
+                explicit_rejection = true;
+                boundary_signal = true;
+            }
+            FactType::Boundary => boundary_signal = true,
+            _ => {}
+        }
+    }
+
+    let action = if explicit_rejection {
         NextBestAction::Stop
-    } else if input.boundary_signal {
+    } else if boundary_signal {
         NextBestAction::CoolDown
     } else {
         stage_action(input.stage)
@@ -158,12 +195,7 @@ pub fn next_best_action(input: &NbaInput) -> Advice {
     };
 
     let reply_candidates = match action {
-        NextBestAction::Stop | NextBestAction::CoolDown => input
-            .proposed_candidates
-            .iter()
-            .filter(|candidate| candidate.style != ReplyStyle::GentleProgress)
-            .cloned()
-            .collect(),
+        NextBestAction::Stop | NextBestAction::CoolDown => Vec::new(),
         _ => input.proposed_candidates.clone(),
     };
 
@@ -181,11 +213,11 @@ pub fn next_best_action(input: &NbaInput) -> Advice {
         _ => vec!["不编造共同经历".to_string()],
     };
 
-    Advice {
+    Ok(Advice {
         action,
         reason: reason_with_evidence(&base_reason, &input.evidence_ids),
         evidence_ids: input.evidence_ids.clone(),
         avoid,
         reply_candidates,
-    }
+    })
 }

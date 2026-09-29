@@ -14,4 +14,4 @@ Fast/Cheap：OCR纠错、分类、事实提取、摘要。Strong Reasoning：Cla
 Vision 只回答“看到了什么”：平台、消息气泡、发送方、文本、时间、回复关系、UI状态；禁止直接从截图得出“对方喜欢用户”。
 
 ## Reply
-至少 natural / humorous / gentle_progress 三候选；不编造共同经历；明确拒绝后不得生成施压推进话术。
+普通情境可提供 natural / humorous / gentle_progress 候选；不编造共同经历。明确拒绝或其他边界信号时，确定性核心输出 STOP/COOL_DOWN 并清空所有回复候选，不能仅凭“自然/幽默”等风格标签判断话术安全。用户若请求回复边界信息，后续需单独设计并回归测试明确的边界确认流程。
