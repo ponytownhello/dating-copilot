@@ -18,7 +18,7 @@
 //! the keys of its schema (AGENTS.md rule 3). No I/O, no randomness, no
 //! wall-clock reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// The seven prompt roles defined by docs/PROMPT_DESIGN.md.
@@ -124,6 +124,9 @@ impl PromptSpec {
     /// Checked constructor. Fails closed on a blank id, schema, model family
     /// or eval set (AGENTS.md rule 6). The template may be empty; output keys
     /// are stored in the given order.
+    // Every parameter is a mandatory identity field of the recorded prompt; a
+    // builder would only add a second way to leave one unset.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: &str,
         version: Version,
@@ -145,6 +148,12 @@ impl PromptSpec {
         }
         if eval_set.trim().is_empty() {
             return Err(PromptError::EmptyField("eval_set"));
+        }
+        let mut unique_output_keys = BTreeSet::new();
+        for key in output_keys {
+            if !unique_output_keys.insert(*key) {
+                return Err(PromptError::DuplicateOutputKey((*key).to_string()));
+            }
         }
         Ok(PromptSpec {
             id: id.to_string(),
@@ -184,6 +193,8 @@ pub enum PromptError {
     MissingOutputKey(String),
     /// The output declares a key its schema does not.
     ExtraOutputKey(String),
+    /// The same output key appears more than once in a schema or result.
+    DuplicateOutputKey(String),
     /// No prompt is registered under the given id.
     UnknownPrompt(String),
 }
@@ -217,6 +228,9 @@ impl fmt::Display for PromptError {
             }
             PromptError::ExtraOutputKey(key) => {
                 write!(f, "output declares undeclared key `{key}`")
+            }
+            PromptError::DuplicateOutputKey(key) => {
+                write!(f, "output key `{key}` appears more than once")
             }
             PromptError::UnknownPrompt(id) => write!(f, "no prompt registered for id `{id}`"),
         }
@@ -291,7 +305,7 @@ impl Registry {
         while cursor < total {
             if chars[cursor] == '{' && cursor + 1 < total && chars[cursor + 1] == '{' {
                 let open = cursor;
-                let mut name_start = cursor + 2;
+                let name_start = cursor + 2;
                 let mut closed = false;
                 let mut index = cursor + 2;
                 while index < total {
@@ -314,7 +328,6 @@ impl Registry {
                     return Err(PromptError::MalformedPlaceholder(fragment));
                 }
                 let name_end = index;
-                name_start = cursor + 2;
                 if name_start == name_end {
                     let fragment: String = chars[open..name_end + 2].iter().collect();
                     return Err(PromptError::MalformedPlaceholder(fragment));
@@ -334,17 +347,22 @@ impl Registry {
     }
 
     /// Validate that an output declares exactly the keys of the registered
-    /// spec's schema (AGENTS.md rule 3). Reports the first missing declared key
-    /// ([`PromptError::MissingOutputKey`]) before the first extra key
-    /// ([`PromptError::ExtraOutputKey`]); a duplicate key in the output is
-    /// accepted as long as the key sets match exactly.
+    /// spec's schema (AGENTS.md rule 3). Rejects duplicate keys before checking
+    /// for the first missing declared key ([`PromptError::MissingOutputKey`])
+    /// or extra key ([`PromptError::ExtraOutputKey`]).
     pub fn validate_output(&self, id: &str, keys: &[&str]) -> Result<(), PromptError> {
         let spec = self
             .specs
             .get(id)
             .ok_or_else(|| PromptError::UnknownPrompt(id.to_string()))?;
+        let mut seen = BTreeSet::new();
+        for key in keys {
+            if !seen.insert(*key) {
+                return Err(PromptError::DuplicateOutputKey((*key).to_string()));
+            }
+        }
         for declared in &spec.output_keys {
-            if !keys.iter().any(|key| *key == declared.as_str()) {
+            if !keys.contains(&declared.as_str()) {
                 return Err(PromptError::MissingOutputKey(declared.clone()));
             }
         }
@@ -379,7 +397,9 @@ mod tests {
     fn register_then_get_round_trip() {
         let mut registry = Registry::new();
         let built = spec("review-1", PromptRole::Review, "1.0", &["a"]);
-        registry.register(built.clone()).expect("first registration");
+        registry
+            .register(built.clone())
+            .expect("first registration");
         assert_eq!(registry.get("review-1"), Some(&built));
     }
 
@@ -457,7 +477,10 @@ mod tests {
             .register(spec("a", PromptRole::System, "1.0", &["k"]))
             .expect("first registration");
         let second = registry.register(spec("a", PromptRole::System, "9.9", &["k"]));
-        assert_eq!(second.unwrap_err(), PromptError::DuplicateId("a".to_string()));
+        assert_eq!(
+            second.unwrap_err(),
+            PromptError::DuplicateId("a".to_string())
+        );
     }
 
     #[test]
@@ -521,15 +544,9 @@ mod tests {
         .expect("valid spec");
         registry.register(built).expect("registration");
         let rendered = registry
-            .render(
-                "action",
-                &[("name", "Ada"), ("count", "3")],
-            )
+            .render("action", &[("name", "Ada"), ("count", "3")])
             .expect("well-formed template");
-        assert_eq!(
-            rendered,
-            "Hi Ada, you sent 3. a} b{c literal {brace}."
-        );
+        assert_eq!(rendered, "Hi Ada, you sent 3. a} b{c literal {brace}.");
     }
 
     #[test]
@@ -559,7 +576,9 @@ mod tests {
         for (index, body) in ["{{ name", "{{}}", "{{a}b}}"].into_iter().enumerate() {
             let built = PromptSpec::new(
                 &format!("malformed-{index}"),
-                Version::parse("1.0").expect("valid version"),
+                // The role repeats across the loop, so each spec must be a strictly
+                // higher version of the one before it, as the registry demands.
+                Version::parse(&format!("1.{index}")).expect("valid version"),
                 PromptRole::Review,
                 "schema",
                 &["k"],
@@ -589,11 +608,50 @@ mod tests {
             PromptError::MissingOutputKey("source".to_string())
         );
         assert_eq!(
-            registry.validate_output("out", &["fact", "source", "extra"]).unwrap_err(),
+            registry
+                .validate_output("out", &["fact", "source", "extra"])
+                .unwrap_err(),
             PromptError::ExtraOutputKey("extra".to_string())
         );
         registry
             .validate_output("out", &["fact", "source"])
             .expect("the exact declared keys are accepted");
+    }
+
+    #[test]
+    fn constructor_rejects_duplicate_output_keys() {
+        let result = PromptSpec::new(
+            "dup",
+            Version::parse("1.0").expect("valid version"),
+            PromptRole::System,
+            "schema",
+            &["a", "b", "a"],
+            "model-family",
+            "eval-set",
+            "template",
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            PromptError::DuplicateOutputKey("a".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_output_rejects_duplicate_keys() {
+        let mut registry = Registry::new();
+        registry
+            .register(spec(
+                "out",
+                PromptRole::Evidence,
+                "1.0",
+                &["fact", "source"],
+            ))
+            .expect("registration");
+        assert_eq!(
+            registry
+                .validate_output("out", &["fact", "source", "fact"])
+                .unwrap_err(),
+            PromptError::DuplicateOutputKey("fact".to_string())
+        );
     }
 }
