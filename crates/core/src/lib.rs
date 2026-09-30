@@ -6,6 +6,7 @@
 //! - [`state`]: the relationship state machine and the adjudicator that rules
 //!   on model-proposed transitions.
 //! - [`nba`]: the deterministic next-best-action rule.
+//! - [`prompt`]: the P0 prompt registry, versioned specs, deterministic render and schema validation.
 //!
 //! Scope and boundaries (AGENTS.md rules 1, 2, 5, 7, 9, 10):
 //! - No UI and no platform adapters live here. Adapters must not perform
@@ -20,6 +21,7 @@
 pub mod canonical;
 pub mod evidence;
 pub mod nba;
+pub mod prompt;
 pub mod state;
 
 pub use canonical::{
@@ -29,4 +31,5 @@ pub use evidence::{Evidence, FactType, Groundedness, Inference, Ledger, LedgerEr
 pub use nba::{
     next_best_action, Advice, NbaError, NbaInput, NextBestAction, ReplyCandidate, ReplyStyle,
 };
+pub use prompt::{PromptError, PromptRole, PromptSpec, Registry, Version};
 pub use state::{adjudicate, AdjudicationError, Applied, Proposal, Stage, Trend};
