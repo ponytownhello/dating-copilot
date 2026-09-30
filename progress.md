@@ -50,3 +50,11 @@
 - 建立版本化 Prompt Registry、JSON Schema 校验和 `docs/TEST_PLAN.md` 规定的 12 类回归集；明确真实拒绝、一般边界、暂时忙碌的区分与误报/漏报指标。
 - 设计并实现用户同意、撤回、会话删除/导出后的 SQLite 持久层；为 Adapter/Gateway/客户端拆出可独立验收的需求与跨平台 CI。
 - 真实 API/网页账号、Android 工具链和设备 E2E 在可用前列为外部验收项；任何单元测试通过不能替代这些门禁。
+
+## 2026-09-30 总监复审：本地克隆与关系类开源项目对照
+
+- 在本地 `feat/p0-deterministic-core@f87d05f` 复核 `AGENTS.md`、核心代码、架构/隐私/测试/路线图；针对 Rust/关系记忆相似项目将 `etherfunlab/eros-engine` 浅克隆到 `%TEMP%\dating-oss-eros-262b4f700e594d54a6c5a127014741e3`，快照 `9cb85a0c1703c6e038f780e151aea6229c693a7e`，只读审阅，未运行其测试。对照报告在 [docs/OPEN_SOURCE_COMPARISON_20260930.md](docs/OPEN_SOURCE_COMPARISON_20260930.md)，涵盖 eros-engine、Goutoujunshi、trust-dating、Resonant、Dating Coach 的契合点、边界、许可证及采纳路线。
+- 当前最应借鉴的是关系记忆的 consent 生命周期、事实/推断/未知分离、用户暂停/撤回/查看/删除，以及 Core/Provider/Persistence/Client 的模块边界。结论是保留本仓确定性证据/状态/NBA 内核，不复制第三方实现；特别不引入 companion affinity/ghosting 策略。eros-engine 为 AGPL-3.0-only；trust-dating 为 GPL-3.0；无明确许可证的源不复用。
+- 复审发现具体隐私缺口：`Ledger::remove_evidence()` 会保留引用该 evidence 的 inference，得到部分/完全不再 grounded 的审计状态。这可表达“撤销证据但保留审计”，不等同用户要求的彻底删除；需将撤销与擦除拆分，未来让删除级联清理来源消息、推断、关系状态、缓存和索引，并用持久层/故障注入测试证明。
+- 本席复跑 `cargo fmt --all --check`、严格 Clippy、离线 workspace tests 和 build，均 exit 0；**26 passed / 0 failed**。这些门禁只覆盖当前 Rust 核心，不代表 Prompt Registry、真实 Provider、SQLite、平台 Adapter、Android/Web 客户端或 E2E 已完成。
+- 当前 Dating 下一闸门：设计 consent/导出/暂停/撤回/擦除 schema 与事务契约，建立 Provider/Prompt schema 校验及 12 类/100+ eval；其后按 Adapter fixture、客户端 UI E2E 分别验收。Harness 总进度继续登记该未完成范围，不因本次文档审计关闭。
