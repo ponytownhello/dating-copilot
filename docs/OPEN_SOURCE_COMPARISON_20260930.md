@@ -21,9 +21,9 @@
 目前分支已落地的是零外部依赖、内存运行的 Rust 确定性核心，不是可交付的完整 App：
 
 - `canonical.rs` 校验来源、内容、时间戳和字段化去重身份；`evidence.rs` 将来源证据和推断分开，拒绝无来源证据、未知引用及敏感臆测；`state.rs` 用确定规则裁决 LLM 可提议的阶段变化；`nba.rs` 让拒绝优先于一般边界、边界优先于阶段建议，STOP/COOL_DOWN 清空所有回复候选。
-- 这些门禁与 Goutoujunshi 的证据边界目标相符；其可执行性由本地 26 个单测/集成式 crate 测试确认。Harness 的 P0 验收还没有覆盖 Prompt Registry、真实 Provider、数据库、Adapter、客户端或端到端流程。
+- 这些门禁与 Goutoujunshi 的证据边界目标相符；当前本地测试为 38 passed（12 个 Prompt Registry 单测、26 个核心集成测试）。`prompt.rs` 已有零依赖、内存态的版本化注册、每角色严格递增、变量渲染和输出字段名门禁，并拒绝重复 schema/output key。它仍不解析 JSON Schema 或验证字段值类型，也没有持久化、eval runner、真实 Provider、数据库、Adapter、客户端或端到端流程；不可把该底层模块表述成已完成的 Provider 输出安全链。
 - `Ledger::remove_evidence()` 当前只删 evidence，保留引用它的 inference，并将其变为 partially-grounded/unsupported。这个行为适合“证据过期后仍展示审计痕迹”，但不能同时被称为彻底隐私删除。产品必须拆开两种操作：**撤销/失效证据并保留脱敏审计痕迹**，以及**用户要求删除时级联清除相关 inference、状态快照、索引、缓存和来源消息**；后者需要持久层事务与跨模块删除测试。不得将现有内存方法标成完整联系人/会话删除。
-- `docs/PRIVACY.md` 和 `docs/ROADMAP.md` 已规划用户控制、SQLite、Provider 与客户端，但核心仓库目前没有 consent 记录、持久化、Provider trait、Prompt Registry、schema 校验、Android、Gateway、MV3 Adapter 或实际 E2E。这些必须留在未完成清单。
+- `docs/PRIVACY.md` 和 `docs/ROADMAP.md` 已规划用户控制、SQLite、Provider 与客户端。核心仓库仍没有 consent 记录、持久化、Provider trait、完整 JSON Schema 校验、Android、Gateway、MV3 Adapter 或实际 E2E；Prompt Registry 目前也只是内存态核心，必须接入这些运行链路后再验收。
 
 ## 采纳顺序与闭环验收
 
@@ -31,7 +31,7 @@
 |---|---|---|---|
 | P0.1 | 同意和删除语义 | 按 user/contact/conversation 范围记录 consent、用途、版本、时间；拒绝或撤回后不再做记忆读取/写入；删除清除原消息及所有派生状态/索引/缓存。导出能追溯字段来源 | SQLite migration；拒绝、暂停、撤回、联系人删除、会话删除、重启后不复现；故障注入验证事务回滚或可恢复删除 |
 | P0.2 | 持久化领域模型 | CanonicalMessage、Evidence、Inference、StateProposal/Applied、NBA、PromptRun 各自有 schema 和来源键；UI/Adapter 不直接写关系状态 | repository 集成测试、重启/迁移/并发写入测试、未知外键 fail-closed |
-| P0.3 | Provider 与 Prompt Registry | 每个 prompt 有 id/version/schema/model-family/eval-set；JSON/schema 校验通过才可进入裁决；Provider 失败、超时、拒绝或解析失败不修改关系状态；密钥不进日志 | mock Provider 契约测试、错误注入、密钥日志扫描、版本回归比较 |
+| P0.3 | Provider 与 Prompt Registry 集成 | 持久化每个 prompt 的 id/version/schema/model-family/eval-set；基于实际 JSON Schema 校验输出结构和值，验证失败不得进入裁决；Provider 失败、超时、拒绝或解析失败不修改关系状态；密钥不进日志 | SQLite migration；mock Provider 契约测试、错误注入、完整 schema 正反例、密钥日志扫描、版本回归比较 |
 | P1 | 证据与边界 eval | 建立 `docs/TEST_PLAN.md` 的 12 类场景并扩展到至少 100 条固定 eval；测 groundedness、unsupported-inference、拒绝/边界召回、误报、动作有用性；关键指标回退阻止晋级 | CI 固定数据集回归；prompt 变更 old/new 报告；拒绝与一般不适分开统计 |
 | P1 | 导入与平台 Adapter | Android 截图/OCR、Chrome/Edge Adapter 只生成 CanonicalMessage；用户明确选择数据后才上传给模型；DOM 选择器集中配置、有 fixture | Adapter fixture、去重/时序/说话人映射、权限/撤销、匿名日志测试 |
 | P1 | 人机交互 | 先完成一个可用客户端和可见 Evidence/Ground Check/边界理由；默认只给可复制建议，不自动发送 | 真实 API 测试与 UI E2E；拒绝、未知、OCR 错误、网络断开均展示安全降级 |
@@ -44,5 +44,6 @@
 ## 复核记录
 
 - Dating Copilot：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets --offline -- -D warnings`、`cargo test --workspace --offline`、`cargo build --workspace --all-targets --offline` 均通过；测试 **26 passed / 0 failed**。这只验收确定性 Rust 核心。
+- 本次后续开发：Prompt Registry 候选 `d2a27c8` 经规则审阅补上重复声明/输出键的 fail-closed 校验，提交 `8e6778d`。候选隔离 worktree 冷跑 fmt、严格 Clippy、workspace 测试（**38 passed / 0 failed**）和 all-target build 全部通过；特性分支已快进并推送到远端 `feat/p0-deterministic-core`。验收仍限于内存态领域模块，不代表 JSON Schema 或实际模型输出链已通过。
 - 上游源码审阅：eros-engine 本地浅克隆 HEAD `9cb85a0c1703c6e038f780e151aea6229c693a7e`；静态审阅，未运行上游测试。
 - 本报告日期：2026-09-30。最新性复核需下次巡检重新 fetch 上游 HEAD 和许可证，不得把此快照说成永久最新。
